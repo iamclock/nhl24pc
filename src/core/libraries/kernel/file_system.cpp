@@ -387,8 +387,8 @@ s64 ReadFile(Core::FileSys::File* file, void* buf, u64 nbytes) {
             for (size_t i = 0; i < hex_len; i++) {
                 hex += fmt::format("{:02x} ", file_buf[i]);
             }
-            LOG_INFO(Kernel_Fs, "DIAG read #{} file={} pos={} nbytes={} read={} hex=[{}] caller={:#x}",
-                     n, file->m_guest_name, read_start_pos, nbytes, bytes, hex, s_guest_caller);
+            LOG_INFO(Kernel_Fs, "DIAG read #{} file={} pos={} nbytes={} read={} hex=[{}] caller={:#x} after_pos={}",
+                     n, file->m_guest_name, read_start_pos, nbytes, bytes, hex, s_guest_caller, file->Tell());
         }
     }
 #ifdef _WIN32
@@ -565,6 +565,10 @@ s64 PS4_SYSV_ABI posix_lseek(s32 fd, s64 offset, s32 whence) {
         // Tell failed in platform-specific code, errno needs to be converted.
         SetPosixErrno(errno);
         return -1;
+    }
+    if (file->m_guest_name.starts_with("/savedata0")) {
+        LOG_INFO(Kernel_Fs, "DIAG lseek file={} offset={} whence={} result={}",
+                 file->m_guest_name, offset, whence, result);
     }
     return result;
 }
