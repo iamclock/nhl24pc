@@ -362,7 +362,12 @@ u64 IOFile::GetSize() const {
     }
 
     // Flush any unwritten buffered data into the file prior to retrieving the file size.
-    std::fflush(file);
+    // Note: WriteRaw() already flushes on every write. We must NEVER flush when reading:
+    // in ISO C fflush on input streams is undefined behavior, and under Wine/Proton msvcrt
+    // it purges the read buffer and zeroes _cnt, corrupting ftello() and causing infinite loops!
+    if (file_access_mode == FileAccessMode::Write || file_access_mode == FileAccessMode::Append) {
+        std::fflush(file);
+    }
 
     std::error_code ec;
 
