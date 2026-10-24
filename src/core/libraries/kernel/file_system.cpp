@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2025-2026 shadPS4 Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <atomic>
 #include <chrono>
 #include <climits>
 #include <cstdint>
@@ -366,6 +367,23 @@ s64 ReadFile(Core::FileSys::File* file, void* buf, u64 nbytes) {
     if (bytes < 0) {
         return bytes;
     }
+#ifdef _WIN32
+    // DIAG(nhl24): log EOF reads together with the call stack, throttled.
+    if (bytes == 0 && nbytes > 0) {
+        static std::atomic<u64> s_eof_reads{0};
+        const u64 n = s_eof_reads.fetch_add(1, std::memory_order_relaxed);
+        if (n < 50 || n % 100000 == 0) {
+            void* frames[24]{};
+            const USHORT cnt = RtlCaptureStackBackTrace(0, 24, frames, nullptr);
+            std::string stack;
+            for (USHORT i = 0; i < cnt; i++) {
+                stack += fmt::format(" {:#x}", reinterpret_cast<uintptr_t>(frames[i]));
+            }
+            LOG_INFO(Kernel_Fs, "DIAG eof-read #{} file={} size={} pos={} nbytes={} stack:{}", n,
+                     file->m_guest_name, file->GetSize(), file->Tell(), nbytes, stack);
+        }
+    }
+#endif
     Diag::C::file_reads.fetch_add(1, std::memory_order_relaxed);
     Diag::C::file_read_bytes.fetch_add(static_cast<u64>(bytes), std::memory_order_relaxed);
     std::memcpy(buf, file_buf.data(), bytes);

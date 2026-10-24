@@ -1956,6 +1956,14 @@ int PS4_SYSV_ABI sceHttpsGetCaList(int httpCtxId, OrbisHttpsCaList* list) {
 int PS4_SYSV_ABI sceHttpsGetSslError(int id, int* errNum, u32* detail) {
     LOG_ERROR(Lib_Http, "(STUBBED) called id={}, errNum={}, detail={}", id, fmt::ptr(errNum),
               fmt::ptr(detail));
+    // Always initialise the outputs: the guest reads them back, and leaving them untouched
+    // makes it use stale stack data as a pointer (crash in DirtySDK/ProtoSSL).
+    if (errNum) {
+        *errNum = 0;
+    }
+    if (detail) {
+        *detail = 0;
+    }
     return ORBIS_OK;
 }
 
