@@ -657,6 +657,17 @@ s32 PS4_SYSV_ABI sceNetBind(OrbisNetId s, const OrbisNetSockaddr* addr, u32 addr
     if (port != 0 && IsReservedPort(port)) {
         return SetErrno(ReservedPortErrno);
     }
+    // NHL24 (DirtySDK): the game binds a stream socket to 127.0.0.1:0 and then connect()s it to an
+    // external address. A host socket bound to loopback cannot reach outside, so connect fails
+    // with EINVAL and the network code stalls. Bind to INADDR_ANY instead (same behaviour as the
+    // previous binary patch of the release exe).
+    if (host.ss_family == AF_INET) {
+        auto* sin = reinterpret_cast<sockaddr_in*>(&host);
+        if ((ntohl(sin->sin_addr.s_addr) >> 24) == 127) {
+            LOG_INFO(Lib_Net, "s = {}: loopback bind rewritten to INADDR_ANY", s);
+            sin->sin_addr.s_addr = htonl(INADDR_ANY);
+        }
+    }
     const auto r = Core::Net::SocketBind(s, reinterpret_cast<sockaddr*>(&host), host_len);
     if (r.error == Error::Ok) {
         ApplyPendingMemberships(s);
