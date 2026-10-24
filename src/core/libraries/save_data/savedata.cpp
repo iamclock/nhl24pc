@@ -1010,6 +1010,8 @@ Error PS4_SYSV_ABI sceSaveDataGetMountInfo(const OrbisSaveDataMountPoint* mountP
             const u64 size = Common::FS::GetDirectorySize(instance->GetSavePath());
             info->blocks = blocks;
             info->freeBlocks = blocks - size / OrbisSaveDataBlockSize;
+            LOG_INFO(Lib_SaveData, "DIAG GetMountInfo: mount={} blocks={} dir_size={} freeBlocks={}",
+                     mount_point_str, blocks, size, info->freeBlocks);
             return Error::OK;
         }
     }

@@ -33,6 +33,15 @@
 #include "core/libraries/kernel/orbis_error.h"
 #include "core/libraries/kernel/posix_error.h"
 #include "core/libraries/libs.h"
+
+#if defined(_MSC_VER)
+#include <intrin.h>
+#define GUEST_CALLER_ADDR() reinterpret_cast<uintptr_t>(_ReturnAddress())
+#else
+#define GUEST_CALLER_ADDR() reinterpret_cast<uintptr_t>(__builtin_return_address(0))
+#endif
+
+static thread_local uintptr_t s_guest_caller = 0;
 #include "core/libraries/net/net_kernel.h"
 #include "core/memory.h"
 #include "kernel.h"
@@ -363,9 +372,24 @@ s64 ReadFile(Core::FileSys::File* file, void* buf, u64 nbytes) {
     if (file_buf.capacity() < nbytes) {
         file_buf.reserve(nbytes);
     }
+    const s64 read_start_pos = file->Tell();
     s64 bytes = file->Read(file_buf.data(), nbytes);
     if (bytes < 0) {
         return bytes;
+    }
+
+    if (file->m_guest_name.starts_with("/savedata0")) {
+        static std::atomic<u64> s_savedata_reads{0};
+        const u64 n = s_savedata_reads.fetch_add(1, std::memory_order_relaxed);
+        if (n < 300) {
+            std::string hex;
+            const size_t hex_len = std::min<size_t>(bytes > 0 ? static_cast<size_t>(bytes) : 0, 16);
+            for (size_t i = 0; i < hex_len; i++) {
+                hex += fmt::format("{:02x} ", file_buf[i]);
+            }
+            LOG_INFO(Kernel_Fs, "DIAG read #{} file={} pos={} nbytes={} read={} hex=[{}] caller={:#x}",
+                     n, file->m_guest_name, read_start_pos, nbytes, bytes, hex, s_guest_caller);
+        }
     }
 #ifdef _WIN32
     // DIAG(nhl24): log EOF reads together with the call stack, throttled.
@@ -428,10 +452,12 @@ s64 PS4_SYSV_ABI readv(s32 fd, const OrbisKernelIovec* iov, s32 iovcnt) {
 }
 
 s64 PS4_SYSV_ABI posix_readv(s32 fd, const OrbisKernelIovec* iov, s32 iovcnt) {
+    s_guest_caller = GUEST_CALLER_ADDR();
     return readv(fd, iov, iovcnt);
 }
 
 s64 PS4_SYSV_ABI sceKernelReadv(s32 fd, const OrbisKernelIovec* iov, s32 iovcnt) {
+    s_guest_caller = GUEST_CALLER_ADDR();
     s64 result = readv(fd, iov, iovcnt);
     if (result < 0) {
         LOG_ERROR(Kernel_Fs, "error = {}", *__Error());
@@ -589,10 +615,12 @@ s64 PS4_SYSV_ABI read(s32 fd, void* buf, u64 nbytes) {
 }
 
 s64 PS4_SYSV_ABI posix_read(s32 fd, void* buf, u64 nbytes) {
+    s_guest_caller = GUEST_CALLER_ADDR();
     return read(fd, buf, nbytes);
 }
 
 s64 PS4_SYSV_ABI sceKernelRead(s32 fd, void* buf, u64 nbytes) {
+    s_guest_caller = GUEST_CALLER_ADDR();
     s64 result = read(fd, buf, nbytes);
     if (result < 0) {
         LOG_ERROR(Kernel_Fs, "error = {}", *__Error());
@@ -785,6 +813,11 @@ s32 PS4_SYSV_ABI posix_stat(const char* path, OrbisKernelStat* sb) {
         sb->st_blksize = 512;
         sb->st_blocks = (sb->st_size + 511) / 512;
         // TODO incomplete
+    }
+
+    if (std::string_view(path).starts_with("/savedata0")) {
+        LOG_INFO(Kernel_Fs, "DIAG posix_stat: path={} mode={:#o} size={} blksize={} blocks={} mtime={}",
+                 path, sb->st_mode, sb->st_size, sb->st_blksize, sb->st_blocks, sb->st_mtim.tv_sec);
     }
 
     return ORBIS_OK;
@@ -1008,6 +1041,7 @@ s32 PS4_SYSV_ABI sceKernelRename(const char* from, const char* to) {
 }
 
 s64 PS4_SYSV_ABI posix_preadv(s32 fd, OrbisKernelIovec* iov, s32 iovcnt, s64 offset) {
+    s_guest_caller = GUEST_CALLER_ADDR();
     if (offset < 0) {
         *__Error() = POSIX_EINVAL;
         return -1;
@@ -1058,6 +1092,7 @@ s64 PS4_SYSV_ABI posix_preadv(s32 fd, OrbisKernelIovec* iov, s32 iovcnt, s64 off
 }
 
 s64 PS4_SYSV_ABI sceKernelPreadv(s32 fd, OrbisKernelIovec* iov, s32 iovcnt, s64 offset) {
+    s_guest_caller = GUEST_CALLER_ADDR();
     s64 result = posix_preadv(fd, iov, iovcnt, offset);
     if (result < 0) {
         LOG_ERROR(Kernel_Fs, "error = {}", *__Error());
@@ -1067,11 +1102,13 @@ s64 PS4_SYSV_ABI sceKernelPreadv(s32 fd, OrbisKernelIovec* iov, s32 iovcnt, s64 
 }
 
 s64 PS4_SYSV_ABI posix_pread(s32 fd, void* buf, u64 nbytes, s64 offset) {
+    s_guest_caller = GUEST_CALLER_ADDR();
     OrbisKernelIovec iovec{buf, nbytes};
     return posix_preadv(fd, &iovec, 1, offset);
 }
 
 s64 PS4_SYSV_ABI sceKernelPread(s32 fd, void* buf, u64 nbytes, s64 offset) {
+    s_guest_caller = GUEST_CALLER_ADDR();
     OrbisKernelIovec iovec{buf, nbytes};
     return sceKernelPreadv(fd, &iovec, 1, offset);
 }
