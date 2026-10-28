@@ -2540,15 +2540,19 @@ void TextureCache::GarbageCollectImages() {
     const auto configure = [&](bool allow_aggressive) {
         pressured = total_used_memory >= pressure_gc_memory;
         aggresive = allow_aggressive && total_used_memory >= critical_gc_memory;
-        ticks_to_destroy = aggresive ? 160 : pressured ? 80 : 16;
+        // Over the critical limit the device is about to run out of memory, so images unused for
+        // even a few submits are evicted rather than waiting for them to age.
+        ticks_to_destroy = aggresive ? 8 : pressured ? 80 : 16;
         ticks_to_destroy = std::min(ticks_to_destroy, gc_tick);
-        num_deletions = aggresive ? 40 : pressured ? 20 : 10;
+        num_deletions = aggresive ? 80 : pressured ? 20 : 10;
     };
     const auto clean_up = [&](Image& image) {
         if (num_deletions == 0) {
             return true;
         }
-        --num_deletions;
+        if (!aggresive) {
+            --num_deletions;
+        }
         const bool download = image.SafeToDownload();
         const bool tiled = image.info.IsTiled();
         if (tiled && download) {
@@ -2557,6 +2561,9 @@ void TextureCache::GarbageCollectImages() {
         }
         if (download && !pressured) {
             return false;
+        }
+        if (aggresive) {
+            --num_deletions;
         }
         const auto image_id = slot_images.GetSlotId(image);
         if (download) {

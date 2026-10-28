@@ -653,10 +653,35 @@ void Instance::CreateAllocator() {
         .vkGetDeviceProcAddr = VULKAN_HPP_DEFAULT_DISPATCHER.vkGetDeviceProcAddr,
     };
 
+    VmaAllocatorCreateFlags allocator_flags = VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT;
+    if (supports_memory_budget) {
+        allocator_flags |= VMA_ALLOCATOR_CREATE_EXT_MEMORY_BUDGET_BIT;
+    }
+
+    // Sparse buffer arena memory is allocated outside VMA and can only live in video memory, so on
+    // small discrete GPUs cap VMA to half of each device-local heap. Images over the cap are placed
+    // in system memory instead of starving the arena.
+    std::array<VkDeviceSize, VK_MAX_MEMORY_HEAPS> heap_size_limits;
+    heap_size_limits.fill(VK_WHOLE_SIZE);
+    bool limit_heaps = false;
+    if (!IsIntegrated()) {
+        const auto memory_props = physical_device.getMemoryProperties();
+        for (u32 i = 0; i < memory_props.memoryHeapCount; ++i) {
+            const auto& heap = memory_props.memoryHeaps[i];
+            if ((heap.flags & vk::MemoryHeapFlagBits::eDeviceLocal) && heap.size < 8_GB) {
+                heap_size_limits[i] = heap.size / 2;
+                limit_heaps = true;
+                LOG_INFO(Render_Vulkan, "Limiting VMA to {} MB of device-local heap {}",
+                         heap_size_limits[i] >> 20, i);
+            }
+        }
+    }
+
     const VmaAllocatorCreateInfo allocator_info = {
-        .flags = VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT,
+        .flags = allocator_flags,
         .physicalDevice = physical_device,
         .device = *device,
+        .pHeapSizeLimit = limit_heaps ? heap_size_limits.data() : nullptr,
         .pVulkanFunctions = &functions,
         .instance = *instance,
         .vulkanApiVersion = TargetVulkanApiVersion,

@@ -103,7 +103,7 @@ void UniqueImage::Destroy() {
 void UniqueImage::Create(const vk::ImageCreateInfo& image_ci) {
     this->image_ci = image_ci;
     ASSERT(!image);
-    const VmaAllocationCreateInfo alloc_ci = {
+    VmaAllocationCreateInfo alloc_ci = {
         .flags = VMA_ALLOCATION_CREATE_WITHIN_BUDGET_BIT,
         .usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE,
         .requiredFlags = 0,
@@ -117,8 +117,27 @@ void UniqueImage::Create(const vk::ImageCreateInfo& image_ci) {
     VmaAllocationInfo alloc_info{};
     VkResult result = vmaCreateImage(allocator, &image_ci_unsafe, &alloc_ci, &unsafe_image,
                                      &allocation, &alloc_info);
+    if (result == VK_ERROR_OUT_OF_DEVICE_MEMORY) {
+        // Every memory type the image accepts is over budget; let the driver oversubscribe.
+        LOG_WARNING(Render_Vulkan, "{}x{} {} image exceeds the memory budget, allocating anyway",
+                    image_ci.extent.width, image_ci.extent.height,
+                    vk::to_string(image_ci.format));
+        alloc_ci.flags &= ~VMA_ALLOCATION_CREATE_WITHIN_BUDGET_BIT;
+        result = vmaCreateImage(allocator, &image_ci_unsafe, &alloc_ci, &unsafe_image, &allocation,
+                                &alloc_info);
+    }
     ASSERT_MSG(result == VK_SUCCESS, "Failed allocating image with error {}",
                vk::to_string(vk::Result{result}));
+    VkMemoryPropertyFlags memory_flags{};
+    vmaGetMemoryTypeProperties(allocator, alloc_info.memoryType, &memory_flags);
+    if (!(memory_flags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)) {
+        static std::atomic<u64> n{0};
+        const u64 k = n.fetch_add(1, std::memory_order_relaxed);
+        if (k < 5 || k % 1000 == 0) {
+            LOG_INFO(Render_Vulkan, "{}x{} image placed in system RAM (#{})",
+                     image_ci.extent.width, image_ci.extent.height, k);
+        }
+    }
     image = vk::Image{unsafe_image};
     size_bytes = alloc_info.size;
 }

@@ -4,6 +4,7 @@
 #pragma once
 
 #include <deque>
+#include <optional>
 #include <boost/container/small_vector.hpp>
 
 #include "common/interval_set.h"
@@ -175,6 +176,7 @@ private:
     IntervalList<Backing> resident_ranges;
 
     u32 arena_memory_type_index{};
+    std::optional<u32> arena_fallback_memory_type_index;
     u32 block_size{};
     u32 block_shift{};
     u32 blocks_per_arena_page{};

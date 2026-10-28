@@ -103,10 +103,25 @@ BufferCache::BufferCache(const Vulkan::Instance& instance_, Vulkan::Scheduler& s
     block_shift = std::bit_width(block_size) - 1;
     blocks_per_arena_page = ARENA_PAGE_SIZE / block_size;
     blocks_per_arena_page_shift = ARENA_PAGE_BITS - block_shift;
+    const auto& memory_props = instance.GetMemoryProperties();
     arena_memory_type_index =
-        FindMemoryType(instance.GetMemoryProperties(), vk::MemoryPropertyFlagBits::eDeviceLocal,
-                       reqs.memoryTypeBits)
+        FindMemoryType(memory_props, vk::MemoryPropertyFlagBits::eDeviceLocal, reqs.memoryTypeBits)
             .value();
+    for (u32 i = 0; i < memory_props.memoryTypeCount; ++i) {
+        const auto heap_index = memory_props.memoryTypes[i].heapIndex;
+        if (((reqs.memoryTypeBits >> i) & 1) != 0 &&
+            !(memory_props.memoryHeaps[heap_index].flags & vk::MemoryHeapFlagBits::eDeviceLocal)) {
+            arena_fallback_memory_type_index = i;
+            break;
+        }
+    }
+    if (arena_fallback_memory_type_index) {
+        LOG_INFO(Render_Vulkan, "Buffer arena memory type {}, system RAM fallback type {}",
+                 arena_memory_type_index, *arena_fallback_memory_type_index);
+    } else {
+        LOG_INFO(Render_Vulkan, "Buffer arena memory type {}, no system RAM fallback",
+                 arena_memory_type_index);
+    }
 
     const u64 bda_pagetable_size =
         (blocks_per_arena_page * NUM_ARENA_PAGES) * sizeof(vk::DeviceAddress);
@@ -507,12 +522,34 @@ void BufferCache::EnsureResident(const Buffer* arena, u64 first_block, u64 last_
     const vk::MemoryAllocateFlagsInfo alloc_flags = {
         .flags = vk::MemoryAllocateFlagBits::eDeviceAddress,
     };
-    const vk::MemoryAllocateInfo alloc_info = {
+    vk::MemoryAllocateInfo alloc_info = {
         .pNext = &alloc_flags,
         .allocationSize = resident_blocks << block_shift,
         .memoryTypeIndex = arena_memory_type_index,
     };
-    const auto device_memory = Vulkan::Check(instance.GetDevice().allocateMemory(alloc_info));
+    // The driver oversubscribes video memory instead of failing, so check the budget up front.
+    bool over_budget = false;
+    if (arena_fallback_memory_type_index && instance.CanReportMemoryUsage()) {
+        const auto [used, budget] = instance.QueryMemoryUsage();
+        over_budget = used + alloc_info.allocationSize > budget;
+    }
+    auto allocation = vk::ResultValue<vk::DeviceMemory>{vk::Result::eErrorOutOfDeviceMemory, {}};
+    if (!over_budget) {
+        allocation = instance.GetDevice().allocateMemory(alloc_info);
+    }
+    if (allocation.result == vk::Result::eErrorOutOfDeviceMemory &&
+        arena_fallback_memory_type_index) {
+        static std::atomic<u64> n{0};
+        const u64 k = n.fetch_add(1, std::memory_order_relaxed);
+        if (k < 20 || k % 1000 == 0) {
+            LOG_WARNING(Render_Vulkan,
+                        "Video memory is full, placing {} KB of buffer memory in system RAM (#{})",
+                        alloc_info.allocationSize >> 10, k);
+        }
+        alloc_info.memoryTypeIndex = *arena_fallback_memory_type_index;
+        allocation = instance.GetDevice().allocateMemory(alloc_info);
+    }
+    const auto device_memory = Vulkan::Check(std::move(allocation));
 
     boost::container::small_vector<vk::BufferCopy, 8> copies;
     const auto staging =
